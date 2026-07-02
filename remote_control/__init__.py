@@ -1,12 +1,15 @@
-"""LAN remote-control tool: control a Mac from a Windows PC.
+"""Cross-platform LAN remote-control tool (any platform controls any platform).
 
 Modules:
     protocol      - length-prefixed binary framing over TCP
     config        - shared defaults and the ServerConfig dataclass
     input_handler - translate input events into pynput mouse/keyboard actions
-    server        - the Mac-side agent (screen capture + input injection)
-    client        - the Windows-side controller (Tkinter GUI)
+    discovery     - UDP broadcast so controllers can list agents by name + IP
+    server        - the agent (screen capture + input injection)
+    client        - the controller (Tkinter GUI)
     clientutil    - pure helpers for the client (coordinate + key mapping)
+    winhook       - Windows low-level keyboard hook (full combo capture)
+    macperms      - macOS Screen Recording / Accessibility permission checks
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
