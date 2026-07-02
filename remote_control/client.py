@@ -173,8 +173,11 @@ class RemoteClient:
         self.root.geometry(f"{init_w}x{init_h}")
         self.root.configure(bg="black")
 
+        # mss screen capture does NOT include the remote cursor, so we must
+        # show the local system cursor - its position maps 1:1 to where clicks
+        # land on the remote screen.
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
-                                cursor="none")
+                                cursor="arrow")
         self.canvas.pack(fill="both", expand=True)
         self.image_id = self.canvas.create_image(0, 0, anchor="nw")
 
