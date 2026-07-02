@@ -23,6 +23,7 @@ from PIL import Image
 from . import protocol as P
 from . import discovery
 from . import macperms
+from .clipboard import ClipboardSync
 from .config import (
     ServerConfig,
     DEFAULT_PORT,
@@ -35,6 +36,28 @@ from .config import (
 from .input_handler import InputHandler
 
 
+def _send(conn, lock, msg_type, payload):
+    """Send a framed message, serialized behind ``lock`` when given (frames and
+    clipboard messages are sent from different threads)."""
+    if lock is None:
+        P.send_msg(conn, msg_type, payload)
+    else:
+        with lock:
+            P.send_msg(conn, msg_type, payload)
+
+
+def _make_clipboard(conn, cfg, send_lock):
+    """Create + start a ClipboardSync that mirrors this machine's clipboard to
+    the controller, or return None if disabled."""
+    if not cfg.clipboard:
+        return None
+    clip = ClipboardSync(
+        send_text=lambda t: _send(conn, send_lock, P.MSG_CLIPBOARD,
+                                  t.encode("utf-8")))
+    clip.start()
+    return clip
+
+
 def _get_monitor(index):
     """Return the mss monitor dict for ``index`` (with a safe fallback)."""
     with mss.MSS() as sct:
@@ -44,8 +67,8 @@ def _get_monitor(index):
         return dict(monitors[index])
 
 
-def _input_loop(conn, handler, stop):
-    """Receive input messages until the connection drops."""
+def _input_loop(conn, handler, stop, clip=None):
+    """Receive input / clipboard messages until the connection drops."""
     try:
         while not stop.is_set():
             msg_type, payload = P.recv_msg(conn)
@@ -54,13 +77,15 @@ def _input_loop(conn, handler, stop):
                     handler.handle(json.loads(payload.decode("utf-8")))
                 except Exception as exc:  # never let one bad event kill the loop
                     print(f"[server] input error: {exc}")
+            elif msg_type == P.MSG_CLIPBOARD and clip is not None:
+                clip.apply_remote(payload.decode("utf-8", "ignore"))
     except (ConnectionError, OSError):
         pass
     finally:
         stop.set()
 
 
-def _capture_loop(conn, cfg, monitor, stop):
+def _capture_loop(conn, cfg, monitor, stop, send_lock=None):
     """Grab the screen and stream JPEG frames until ``stop`` is set."""
     interval = 1.0 / max(1, cfg.fps)
     scale = cfg.scale
@@ -82,7 +107,7 @@ def _capture_loop(conn, cfg, monitor, stop):
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=cfg.quality)
                 try:
-                    P.send_msg(conn, P.MSG_FRAME, buf.getvalue())
+                    _send(conn, send_lock, P.MSG_FRAME, buf.getvalue())
                 except (ConnectionError, OSError):
                     break
             elapsed = time.time() - start
@@ -109,16 +134,21 @@ def handle_connection(conn, cfg):
     if cfg.input_enabled:
         handler = InputHandler(width, height, monitor["left"], monitor["top"])
 
+    send_lock = threading.Lock()
+    clip = _make_clipboard(conn, cfg, send_lock)
+
     stop = threading.Event()
     reader = threading.Thread(
-        target=_input_loop, args=(conn, handler, stop), daemon=True
+        target=_input_loop, args=(conn, handler, stop, clip), daemon=True
     )
     reader.start()
     try:
-        _capture_loop(conn, cfg, monitor, stop)
+        _capture_loop(conn, cfg, monitor, stop, send_lock)
     finally:
         stop.set()
         reader.join(timeout=1.0)
+        if clip is not None:
+            clip.stop()
         if handler is not None:
             handler.release_all()
 
@@ -219,6 +249,8 @@ def _gui_session(conn, cfg, inject_q):
         inject_q.put(("config", (width, height, monitor["left"], monitor["top"])))
 
     stop = threading.Event()
+    send_lock = threading.Lock()
+    clip = _make_clipboard(conn, cfg, send_lock)
 
     def reader():
         try:
@@ -229,6 +261,8 @@ def _gui_session(conn, cfg, inject_q):
                         inject_q.put(("input", json.loads(pl.decode("utf-8"))))
                     except Exception as exc:
                         print(f"[server] input decode error: {exc}")
+                elif mt == P.MSG_CLIPBOARD and clip is not None:
+                    clip.apply_remote(pl.decode("utf-8", "ignore"))
         except (ConnectionError, OSError):
             pass
         finally:
@@ -237,10 +271,12 @@ def _gui_session(conn, cfg, inject_q):
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     try:
-        _capture_loop(conn, cfg, monitor, stop)  # mss on a bg thread is fine
+        _capture_loop(conn, cfg, monitor, stop, send_lock)  # mss on a bg thread is fine
     finally:
         stop.set()
         t.join(timeout=1.0)
+        if clip is not None:
+            clip.stop()
 
 
 def run_agent_gui(base_args):
@@ -287,6 +323,7 @@ def run_agent_gui(base_args):
                 host=base_args.host, port=port, password=pw_var.get(),
                 fps=base_args.fps, quality=base_args.quality,
                 scale=base_args.scale, monitor=base_args.monitor,
+                clipboard=base_args.clipboard,
             )
             # On macOS, capturing other windows needs Screen Recording and
             # controlling the mouse/keyboard needs Accessibility. Gate here so
@@ -505,6 +542,8 @@ def parse_args(argv=None):
                    help="downscale factor, e.g. 0.75 for lower bandwidth")
     p.add_argument("--monitor", type=int, default=DEFAULT_MONITOR,
                    help="mss monitor index (1 = primary)")
+    p.add_argument("--no-clipboard", action="store_false", dest="clipboard",
+                   help="disable clipboard sync")
     p.add_argument("--check-perms", action="store_true",
                    help="print macOS permission diagnostics and exit")
     return p.parse_args(argv)
@@ -530,6 +569,7 @@ def main(argv=None):
         quality=args.quality,
         scale=args.scale,
         monitor=args.monitor,
+        clipboard=args.clipboard,
     )
     serve(cfg)
 

@@ -22,6 +22,7 @@ from PIL import Image, ImageTk
 from . import protocol as P
 from . import clientutil as U
 from . import discovery
+from .clipboard import ClipboardSync
 from .config import DEFAULT_PORT, DEFAULT_PASSWORD
 
 MOVE_MIN_INTERVAL = 0.010  # throttle mouse-move messages to ~100/s
@@ -30,10 +31,12 @@ IS_WIN = sys.platform.startswith("win")
 
 
 class RemoteClient:
-    def __init__(self, host, port, password):
+    def __init__(self, host, port, password, clipboard=True):
         self.host = host
         self.port = port
         self.password = password
+        self._clipboard_enabled = clipboard
+        self._clip = None            # ClipboardSync (started after connect)
 
         self.sock = None
         self.remote_w = 0
@@ -83,6 +86,8 @@ class RemoteClient:
                 if msg_type == P.MSG_FRAME:
                     with self._pending_lock:
                         self._pending_jpeg = payload
+                elif msg_type == P.MSG_CLIPBOARD and self._clip is not None:
+                    self._clip.apply_remote(payload.decode("utf-8", "ignore"))
         except (ConnectionError, OSError):
             pass
         finally:
@@ -121,6 +126,13 @@ class RemoteClient:
         try:
             with self._send_lock:
                 P.send_msg(self.sock, P.MSG_INPUT, data)
+        except (ConnectionError, OSError):
+            self._running = False
+
+    def _send_clipboard(self, text):
+        try:
+            with self._send_lock:
+                P.send_msg(self.sock, P.MSG_CLIPBOARD, text.encode("utf-8"))
         except (ConnectionError, OSError):
             self._running = False
 
@@ -283,6 +295,12 @@ class RemoteClient:
             except Exception:
                 pass
             self._hook = None
+        if self._clip is not None:
+            try:
+                self._clip.stop()
+            except Exception:
+                pass
+            self._clip = None
         try:
             if self.sock:
                 self.sock.close()
@@ -298,6 +316,9 @@ class RemoteClient:
         self.connect()
         self._running = True
         threading.Thread(target=self._reader, daemon=True).start()
+        if self._clipboard_enabled:
+            self._clip = ClipboardSync(send_text=self._send_clipboard)
+            self._clip.start()
         self._build_window()
         self.root.after(15, self._render)
         self.root.mainloop()
@@ -411,6 +432,8 @@ def parse_args(argv=None):
                    help="agent IP address on the LAN (omit to get a dialog)")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--password", default=DEFAULT_PASSWORD)
+    p.add_argument("--no-clipboard", action="store_false", dest="clipboard",
+                   help="disable clipboard sync")
     return p.parse_args(argv)
 
 
@@ -424,7 +447,7 @@ def main(argv=None):
             return
         host, port, password = chosen["host"], chosen["port"], chosen["password"]
 
-    client = RemoteClient(host, port, password)
+    client = RemoteClient(host, port, password, clipboard=args.clipboard)
     try:
         client.run()
     except ConnectionRefusedError:

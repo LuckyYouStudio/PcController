@@ -20,6 +20,7 @@ MSG_AUTH_FAIL = 0x03    # server -> client: no payload
 MSG_SCREEN_INFO = 0x04  # server -> client: payload = SCREEN_INFO struct (w, h)
 MSG_FRAME = 0x05        # server -> client: payload = JPEG bytes
 MSG_INPUT = 0x06        # client -> server: payload = utf-8 JSON input event
+MSG_CLIPBOARD = 0x07    # both directions: payload = utf-8 clipboard text
 
 _HEADER = struct.Struct(">BI")
 SCREEN_INFO = struct.Struct(">II")  # width, height

@@ -20,3 +20,4 @@ class ServerConfig:
     scale: float = DEFAULT_SCALE
     monitor: int = DEFAULT_MONITOR
     input_enabled: bool = True  # set False in tests to avoid moving the mouse
+    clipboard: bool = True      # bidirectional clipboard text sync
