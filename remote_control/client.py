@@ -21,10 +21,12 @@ from PIL import Image, ImageTk
 
 from . import protocol as P
 from . import clientutil as U
+from . import discovery
 from .config import DEFAULT_PORT, DEFAULT_PASSWORD
 
 MOVE_MIN_INTERVAL = 0.010  # throttle mouse-move messages to ~100/s
 IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform.startswith("win")
 
 
 class RemoteClient:
@@ -50,6 +52,10 @@ class RemoteClient:
         self._running = False
         self._last_move = 0.0
         self._pressed_specials = set()   # ctrl/alt/shift/cmd currently held
+        self._send_lock = threading.Lock()   # GUI + hook threads both send
+        self._hook = None                # Windows keyboard hook (if available)
+        self._kbd_capture = True         # master toggle for keyboard forwarding
+        self._status_var = None
 
     # -- connection ---------------------------------------------------------
     def connect(self):
@@ -111,8 +117,10 @@ class RemoteClient:
 
     # -- input forwarding ---------------------------------------------------
     def _send_input(self, ev):
+        data = json.dumps(ev).encode("utf-8")
         try:
-            P.send_msg(self.sock, P.MSG_INPUT, json.dumps(ev).encode("utf-8"))
+            with self._send_lock:
+                P.send_msg(self.sock, P.MSG_INPUT, data)
         except (ConnectionError, OSError):
             self._running = False
 
@@ -166,19 +174,30 @@ class RemoteClient:
     # -- window lifecycle ---------------------------------------------------
     def _build_window(self):
         self.root = tk.Tk()
-        self.root.title(f"Remote Control - {self.host} "
-                        f"({self.remote_w}x{self.remote_h})  [Ctrl+Alt+Q to quit]")
+        self.root.title(f"Remote Control - {self.host}:{self.port} "
+                        f"({self.remote_w}x{self.remote_h})")
         init_w = min(self.remote_w, 1280) or 1280
         init_h = min(self.remote_h, 800) or 800
-        self.root.geometry(f"{init_w}x{init_h}")
+        self.root.geometry(f"{init_w}x{init_h + 30}")
         self.root.configure(bg="black")
 
-        # mss screen capture does NOT include the remote cursor, so we must
-        # show the local system cursor - its position maps 1:1 to where clicks
-        # land on the remote screen.
+        # --- top toolbar ---
+        bar = tk.Frame(self.root, bg="#222")
+        bar.pack(side="top", fill="x")
+        self._status_var = tk.StringVar()
+        tk.Label(bar, textvariable=self._status_var, bg="#222", fg="#ddd",
+                 anchor="w", padx=8).pack(side="left")
+        tk.Button(bar, text="发送 Ctrl+Alt+Del",
+                  command=self._send_ctrl_alt_del).pack(side="right", padx=4, pady=3)
+        self._cap_btn = tk.Button(bar, text="键盘捕获", command=self._toggle_capture)
+        self._cap_btn.pack(side="right", padx=4, pady=3)
+
+        # --- remote screen canvas ---
+        # mss screen capture does NOT include the remote cursor, so we show the
+        # local system cursor - its position maps 1:1 to where clicks land.
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
                                 cursor="arrow")
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(side="top", fill="both", expand=True)
         self.image_id = self.canvas.create_image(0, 0, anchor="nw")
 
         c = self.canvas
@@ -195,16 +214,75 @@ class RemoteClient:
         c.bind("<Button-4>", self._on_wheel)   # wheel up on Linux/X11
         c.bind("<Button-5>", self._on_wheel)   # wheel down on Linux/X11
 
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        c.focus_set()
+
+        self._start_keyboard()
+        self._update_status()
+
+    # -- keyboard capture ---------------------------------------------------
+    def _start_keyboard(self):
+        """Use the Windows global hook (full combo capture) if possible,
+        otherwise fall back to Tk key bindings."""
+        if IS_WIN:
+            try:
+                from . import winhook
+                self._hook = winhook.KeyboardHook(
+                    on_event=self._forward_key,
+                    enabled_getter=lambda: self._kbd_capture and self._running,
+                    on_disconnect=self._request_stop)
+                self._hook.target_hwnd = self.root.winfo_id()
+                if self._hook.start():
+                    return   # hook is live; Tk key bindings not needed
+                self._hook = None
+            except Exception as exc:
+                print(f"[client] keyboard hook unavailable: {exc}")
+                self._hook = None
+        # fallback: Tk bindings (cannot suppress OS-global hotkeys)
+        self._cap_btn.pack_forget()
         self.root.bind("<KeyPress>", lambda e: self._on_key(e, True))
         self.root.bind("<KeyRelease>", lambda e: self._on_key(e, False))
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        c.focus_set()
+    def _forward_key(self, spec, pressed):
+        ev = {"t": "key_down" if pressed else "key_up"}
+        ev.update(spec)
+        self._send_input(ev)
+
+    def _toggle_capture(self):
+        self._kbd_capture = not self._kbd_capture
+        self._update_status()
+
+    def _send_ctrl_alt_del(self):
+        for spec in ({"special": "ctrl"}, {"special": "alt"}, {"special": "delete"}):
+            self._forward_key(spec, True)
+        for spec in ({"special": "delete"}, {"special": "alt"}, {"special": "ctrl"}):
+            self._forward_key(spec, False)
+
+    def _update_status(self):
+        if self._status_var is None:
+            return
+        if self._hook is not None:
+            state = "开 (组合键→远程)" if self._kbd_capture else "关 (本机)"
+            self._cap_btn.configure(text=f"键盘捕获: {state}")
+            tip = "Ctrl+Alt+Q 断开"
+        else:
+            tip = "组合键有限 (未启用全局钩子)  |  Ctrl+Alt+Q 断开"
+        self._status_var.set(
+            f"{self.host}:{self.port}  {self.remote_w}x{self.remote_h}  |  {tip}")
+
+    def _request_stop(self):
+        self._running = False   # render loop will pick this up and shut down
 
     def _on_close(self):
         self._running = False
 
     def _shutdown(self):
+        if self._hook is not None:
+            try:
+                self._hook.stop()
+            except Exception:
+                pass
+            self._hook = None
         try:
             if self.sock:
                 self.sock.close()
@@ -225,52 +303,106 @@ class RemoteClient:
         self.root.mainloop()
 
 
-def prompt_connection(default_host="", default_port=DEFAULT_PORT,
-                      default_password=DEFAULT_PASSWORD):
-    """Show a small dialog to collect host/port/password. Returns a dict or
-    None if the user cancelled. Used when the controller is double-clicked
-    (i.e. launched without a --host argument)."""
+def connection_manager(default_port=DEFAULT_PORT, default_password=DEFAULT_PASSWORD):
+    """Show a TeamViewer-style picker: auto-discovered LAN machines (name + IP)
+    plus manual entry. Returns {host, port, password} or None if cancelled."""
     result = {}
+    machines = []
+
     win = tk.Tk()
-    win.title("连接被控端 / Connect")
+    win.title("PcController - 选择要控制的电脑")
     win.resizable(False, False)
-    frm = tk.Frame(win, padx=18, pady=14)
-    frm.pack()
+    outer = tk.Frame(win, padx=16, pady=12)
+    outer.pack()
 
-    tk.Label(frm, text="被控端 IP (host):").grid(row=0, column=0, sticky="e", pady=5)
-    host_var = tk.StringVar(value=default_host)
-    host_entry = tk.Entry(frm, textvariable=host_var, width=24)
-    host_entry.grid(row=0, column=1, pady=5)
+    tk.Label(outer, text="局域网中发现的电脑(双击直接连接):", anchor="w").grid(
+        row=0, column=0, columnspan=2, sticky="w")
 
-    tk.Label(frm, text="端口 (port):").grid(row=1, column=0, sticky="e", pady=5)
+    listframe = tk.Frame(outer)
+    listframe.grid(row=1, column=0, columnspan=2, pady=(4, 6), sticky="we")
+    scroll = tk.Scrollbar(listframe, orient="vertical")
+    listbox = tk.Listbox(listframe, width=48, height=7, yscrollcommand=scroll.set)
+    scroll.config(command=listbox.yview)
+    scroll.pack(side="right", fill="y")
+    listbox.pack(side="left", fill="both", expand=True)
+
+    status = tk.StringVar(value="")
+    tk.Label(outer, textvariable=status, fg="#666", anchor="w").grid(
+        row=2, column=0, sticky="w")
+    refresh_btn = tk.Button(outer, text="刷新")
+    refresh_btn.grid(row=2, column=1, sticky="e")
+
+    form = tk.Frame(outer)
+    form.grid(row=3, column=0, columnspan=2, pady=(8, 0), sticky="we")
+    tk.Label(form, text="IP:").grid(row=0, column=0, sticky="e", pady=3)
+    host_var = tk.StringVar()
+    tk.Entry(form, textvariable=host_var, width=26).grid(row=0, column=1, pady=3)
+    tk.Label(form, text="端口:").grid(row=1, column=0, sticky="e", pady=3)
     port_var = tk.StringVar(value=str(default_port))
-    tk.Entry(frm, textvariable=port_var, width=24).grid(row=1, column=1, pady=5)
-
-    tk.Label(frm, text="密码 (password):").grid(row=2, column=0, sticky="e", pady=5)
+    tk.Entry(form, textvariable=port_var, width=26).grid(row=1, column=1, pady=3)
+    tk.Label(form, text="密码:").grid(row=2, column=0, sticky="e", pady=3)
     pw_var = tk.StringVar(value=default_password)
-    tk.Entry(frm, textvariable=pw_var, width=24, show="*").grid(row=2, column=1, pady=5)
+    pw_entry = tk.Entry(form, textvariable=pw_var, width=26, show="*")
+    pw_entry.grid(row=2, column=1, pady=3)
 
-    def on_ok():
+    def populate(found):
+        machines.extend(found)
+        for m in found:
+            listbox.insert("end", f"{m['name']}   ({m['ip']}:{m['port']})")
+        status.set(f"找到 {len(found)} 台" if found else "未发现,请手动输入 IP")
+        refresh_btn.configure(state="normal")
+
+    def do_scan():
+        status.set("正在搜索…")
+        refresh_btn.configure(state="disabled")
+        listbox.delete(0, "end")
+        machines.clear()
+
+        def worker():
+            try:
+                found = discovery.discover(timeout=1.5)
+            except Exception:
+                found = []
+            win.after(0, lambda: populate(found))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_select(_evt=None):
+        sel = listbox.curselection()
+        if sel:
+            m = machines[sel[0]]
+            host_var.set(m["ip"])
+            port_var.set(str(m["port"]))
+            pw_entry.focus_set()
+
+    def on_connect(_evt=None):
+        on_select()
+        host = host_var.get().strip()
+        if not host:
+            status.set("请先选择或输入 IP")
+            return
         try:
             port = int(port_var.get().strip() or DEFAULT_PORT)
         except ValueError:
             port = DEFAULT_PORT
-        result.update(host=host_var.get().strip(), port=port,
-                      password=pw_var.get())
+        result.update(host=host, port=port, password=pw_var.get())
         win.destroy()
 
-    btns = tk.Frame(frm)
-    btns.grid(row=3, column=0, columnspan=2, pady=(12, 0))
-    tk.Button(btns, text="连接", width=9, command=on_ok).pack(side="left", padx=8)
-    tk.Button(btns, text="取消", width=9, command=win.destroy).pack(side="left", padx=8)
-    win.bind("<Return>", lambda e: on_ok())
-    host_entry.focus_set()
+    listbox.bind("<<ListboxSelect>>", on_select)
+    listbox.bind("<Double-Button-1>", on_connect)
+    refresh_btn.configure(command=do_scan)
+
+    btns = tk.Frame(outer)
+    btns.grid(row=4, column=0, columnspan=2, pady=(12, 0))
+    tk.Button(btns, text="连接", width=10, command=on_connect).pack(side="left", padx=8)
+    tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side="left", padx=8)
+    win.bind("<Return>", on_connect)
+
     win.eval("tk::PlaceWindow . center")
+    win.after(200, do_scan)   # auto-scan when the window opens
     win.mainloop()
 
-    if not result.get("host"):
-        return None
-    return result
+    return result or None
 
 
 def parse_args(argv=None):
@@ -286,8 +418,8 @@ def main(argv=None):
     args = parse_args(argv)
     host, port, password = args.host, args.port, args.password
 
-    if host is None:  # double-clicked / no --host: ask interactively
-        chosen = prompt_connection(default_port=port)
+    if host is None:  # double-clicked / no --host: show the LAN picker
+        chosen = connection_manager(default_port=port, default_password=password)
         if chosen is None:
             return
         host, port, password = chosen["host"], chosen["port"], chosen["password"]

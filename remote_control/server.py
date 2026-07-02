@@ -21,6 +21,7 @@ import mss
 from PIL import Image
 
 from . import protocol as P
+from . import discovery
 from .config import (
     ServerConfig,
     DEFAULT_PORT,
@@ -127,8 +128,16 @@ def serve(cfg):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((cfg.host, cfg.port))
     srv.listen(1)
+
+    # advertise this machine on the LAN so controllers can find it by name
+    disc_stop = threading.Event()
+    disc_thread = threading.Thread(
+        target=discovery.run_responder, args=(cfg.port, disc_stop), daemon=True)
+    disc_thread.start()
+
     print(f"[server] listening on {cfg.host}:{cfg.port} "
           f"(fps={cfg.fps}, quality={cfg.quality}, scale={cfg.scale})")
+    print(f"[server] discoverable as '{socket.gethostname()}' on the LAN")
     print("[server] waiting for a controller to connect ...")
     try:
         while True:
@@ -144,6 +153,7 @@ def serve(cfg):
     except KeyboardInterrupt:
         print("\n[server] shutting down")
     finally:
+        disc_stop.set()
         srv.close()
 
 
