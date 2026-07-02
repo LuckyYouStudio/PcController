@@ -40,7 +40,6 @@ SPECIAL_KEY_MAP = {
     "end": Key.end,
     "page_up": Key.page_up,
     "page_down": Key.page_down,
-    "insert": Key.insert,
     "shift": Key.shift,
     "ctrl": Key.ctrl,
     "alt": Key.alt,
@@ -50,6 +49,11 @@ SPECIAL_KEY_MAP = {
     "f5": Key.f5, "f6": Key.f6, "f7": Key.f7, "f8": Key.f8,
     "f9": Key.f9, "f10": Key.f10, "f11": Key.f11, "f12": Key.f12,
 }
+
+# keys that only exist on some platforms (e.g. macOS has no Insert key)
+for _name in ("insert",):
+    if hasattr(Key, _name):
+        SPECIAL_KEY_MAP[_name] = getattr(Key, _name)
 
 
 class InputHandler:

@@ -11,6 +11,11 @@ from remote_control import protocol as P
 class ProtocolTest(unittest.TestCase):
     def setUp(self):
         self.a, self.b = socket.socketpair()
+        # macOS AF_UNIX socketpair defaults to ~8 KB buffers; the ~10 KB frame
+        # case would deadlock a single-threaded send-then-recv without this
+        for s in (self.a, self.b):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
         self.addCleanup(self.a.close)
         self.addCleanup(self.b.close)
 
