@@ -445,7 +445,10 @@ def run_agent_gui(base_args):
                 pass
             perm_state["tick"] += 1
             if perm_state["tick"] % 60 == 0:   # ~ once per second
-                refresh_warn()
+                try:
+                    refresh_warn()
+                except Exception:
+                    pass  # never let the perm check stall the injection pump
             handler = state["handler"]
             if handler is not None:
                 try:
