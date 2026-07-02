@@ -10,6 +10,7 @@ Only imported on Windows. ``vk_to_spec`` is a pure function and unit-tested.
 """
 
 import ctypes
+import os
 import queue
 import threading
 from ctypes import wintypes
@@ -92,6 +93,8 @@ _user32.GetMessageW.restype = ctypes.c_int
 _user32.GetForegroundWindow.restype = wintypes.HWND
 _user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 _user32.GetAncestor.restype = wintypes.HWND
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 _user32.PostThreadMessageW.argtypes = [wintypes.DWORD, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]
 _user32.PostThreadMessageW.restype = wintypes.BOOL
 _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
@@ -114,6 +117,7 @@ class KeyboardHook:
         self._on_disconnect = on_disconnect
         self.target_hwnd = None
         self._root_hwnd = 0
+        self._own_pid = os.getpid()
         self._hook = None
         self._tid = 0
         self._stop = False
@@ -126,9 +130,19 @@ class KeyboardHook:
     def _active(self):
         if not self._enabled_getter():
             return False
-        if not self._root_hwnd:
+        fg = _user32.GetForegroundWindow()
+        if not fg:
+            return False
+        # Active whenever ANY window of THIS process is in the foreground. This
+        # is robust against Tk's wrapper window: winfo_id() often returns a
+        # child HWND, so an exact top-level HWND match (the old approach) failed
+        # and every combo leaked to the local machine.
+        pid = wintypes.DWORD(0)
+        _user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+        if pid.value == self._own_pid:
             return True
-        return _user32.GetForegroundWindow() == self._root_hwnd
+        # fallback: exact-HWND match if we resolved our root window
+        return bool(self._root_hwnd) and fg == self._root_hwnd
 
     def _low_level_proc(self, nCode, wParam, lParam):
         if nCode == 0:
@@ -140,6 +154,8 @@ class KeyboardHook:
 
     def _handle(self, vk, pressed):
         active = self._active()
+        if active != self._was_active:
+            print(f"[winhook] 键盘捕获 {'开 (组合键→远程)' if active else '关 (漏给本机)'}")
         # if focus just left while keys were held, release them on the remote
         if self._was_active and not active and self._held:
             for name in list(self._held):
@@ -186,6 +202,8 @@ class KeyboardHook:
         if not self._hook:
             print("[winhook] SetWindowsHookEx failed; falling back to Tk keys")
             return
+        print(f"[winhook] 全局键盘钩子已安装 (pid={self._own_pid})；"
+              "把控制端窗口切到最前即可捕获组合键")
         msg = wintypes.MSG()
         while not self._stop:
             r = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
