@@ -22,6 +22,7 @@ from PIL import Image
 
 from . import protocol as P
 from . import discovery
+from . import macperms
 from .config import (
     ServerConfig,
     DEFAULT_PORT,
@@ -151,6 +152,14 @@ def serve(cfg, sock=None, on_status=None):
     ).start()
 
     print(f"[server] discoverable as '{socket.gethostname()}' on the LAN")
+    if macperms.IS_MAC:
+        st = macperms.status()
+        if not st["screen_recording"]:
+            print("[server] ⚠️ 屏幕录制未授权：控制端只能看到本程序的窗口。"
+                  "请在 系统设置→隐私与安全性→屏幕录制 中授权后重启。")
+        if not st["accessibility"]:
+            print("[server] ⚠️ 辅助功能未授权：无法注入鼠标/键盘。"
+                  "请在 系统设置→隐私与安全性→辅助功能 中授权。")
     notify(f"监听中 {cfg.host}:{cfg.port} — 等待控制端连接…")
     try:
         while True:
@@ -279,11 +288,71 @@ def run_agent_gui(base_args):
                 fps=base_args.fps, quality=base_args.quality,
                 scale=base_args.scale, monitor=base_args.monitor,
             )
-            start_serving(cfg)
+            # On macOS, capturing other windows needs Screen Recording and
+            # controlling the mouse/keyboard needs Accessibility. Gate here so
+            # the user isn't left with a black screen / dead input after connect.
+            st = macperms.status()
+            if not (st["screen_recording"] and st["accessibility"]):
+                show_permissions(cfg)
+            else:
+                start_serving(cfg)
 
         tk.Button(btns, text="启动", width=9, command=on_start).pack(side="left", padx=8)
         tk.Button(btns, text="取消", width=9, command=root.destroy).pack(side="left", padx=8)
         root.bind("<Return>", lambda e: on_start())
+
+    def show_permissions(cfg):
+        for w in body.winfo_children():
+            w.destroy()
+        root.unbind("<Return>")
+        tk.Label(body, text="需要开启两项 macOS 权限", font=("", 15, "bold")).pack()
+        tk.Label(body, text="否则控制端只能看到本窗口、且无法控制这台 Mac。",
+                 fg="#a33").pack(pady=(4, 10))
+
+        rows = tk.Frame(body)
+        rows.pack()
+        sr_var = tk.StringVar()
+        ax_var = tk.StringVar()
+
+        def refresh_labels():
+            st = macperms.status()
+            sr_var.set("✅ 已开启" if st["screen_recording"] else "❌ 未开启")
+            ax_var.set("✅ 已开启" if st["accessibility"] else "❌ 未开启")
+            return st
+
+        tk.Label(rows, text="① 屏幕录制", font=("", 13)).grid(row=0, column=0, sticky="w", pady=4)
+        tk.Label(rows, textvariable=sr_var, width=8).grid(row=0, column=1, padx=8)
+        tk.Button(rows, text="开启并打开设置",
+                  command=lambda: (macperms.request_screen_recording(),
+                                   macperms.open_screen_recording_settings(),
+                                   refresh_labels())
+                  ).grid(row=0, column=2)
+        tk.Label(rows, text="② 辅助功能", font=("", 13)).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Label(rows, textvariable=ax_var, width=8).grid(row=1, column=1, padx=8)
+        tk.Button(rows, text="开启并打开设置",
+                  command=lambda: (macperms.request_accessibility(True),
+                                   macperms.open_accessibility_settings(),
+                                   refresh_labels())
+                  ).grid(row=1, column=2)
+
+        tk.Label(body, wraplength=340, fg="#666", justify="left",
+                 text="步骤:点每行的按钮 → 在系统设置里给 PcControllerAgent 打开开关。\n"
+                      "⚠️ 开启「屏幕录制」后,必须完全退出本 App 再重新打开才生效。"
+                 ).pack(pady=(12, 6))
+
+        btns2 = tk.Frame(body)
+        btns2.pack(pady=(4, 0))
+
+        def recheck():
+            st = refresh_labels()
+            if st["screen_recording"] and st["accessibility"]:
+                start_serving(cfg)
+
+        tk.Button(btns2, text="重新检测", width=10, command=recheck).pack(side="left", padx=6)
+        tk.Button(btns2, text="仍然启动", width=10,
+                  command=lambda: start_serving(cfg)).pack(side="left", padx=6)
+        tk.Button(btns2, text="返回", width=6, command=show_config).pack(side="left", padx=6)
+        refresh_labels()
 
     def start_serving(cfg):
         # Bind up-front so "port already in use" is a clear dialog, not a silent death.
@@ -342,8 +411,31 @@ def run_agent_gui(base_args):
         tk.Label(body, text=f"端口: {cfg.port}      密码: {cfg.password}").pack(pady=(2, 0))
         status_var = tk.StringVar(value="启动中…")
         tk.Label(body, textvariable=status_var, fg="#666", wraplength=300).pack(pady=(12, 0))
+
+        # live permission warning (helps if the user chose "仍然启动")
+        warn_var = tk.StringVar(value="")
+        warn_lbl = tk.Label(body, textvariable=warn_var, fg="#a33", wraplength=320,
+                            justify="left")
+        warn_lbl.pack(pady=(6, 0))
+        perm_btn = tk.Button(body, text="打开权限设置",
+                             command=lambda: show_permissions(cfg))
+        perm_btn.pack(pady=(4, 0))
+
         tk.Label(body, text="在控制端填上面的 IP / 端口 / 密码即可连接。\n关闭此窗口即停止服务。",
                  fg="#999").pack(pady=(12, 0))
+
+        perm_state = {"tick": 0}
+
+        def refresh_warn():
+            miss = []
+            st = macperms.status()
+            if not st["screen_recording"]:
+                miss.append("屏幕录制未开启 → 控制端只能看到本窗口(需授权后重启本 App)")
+            if not st["accessibility"]:
+                miss.append("辅助功能未开启 → 无法控制这台 Mac")
+            warn_var.set(("⚠️ " + "\n⚠️ ".join(miss)) if miss else "")
+
+        refresh_warn()  # show any warning immediately
 
         def pump():
             try:
@@ -351,6 +443,9 @@ def run_agent_gui(base_args):
                     status_var.set(ui_q.get_nowait())
             except queue.Empty:
                 pass
+            perm_state["tick"] += 1
+            if perm_state["tick"] % 60 == 0:   # ~ once per second
+                refresh_warn()
             handler = state["handler"]
             if handler is not None:
                 try:
@@ -407,11 +502,17 @@ def parse_args(argv=None):
                    help="downscale factor, e.g. 0.75 for lower bandwidth")
     p.add_argument("--monitor", type=int, default=DEFAULT_MONITOR,
                    help="mss monitor index (1 = primary)")
+    p.add_argument("--check-perms", action="store_true",
+                   help="print macOS permission diagnostics and exit")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.check_perms:
+        import json as _json
+        print(_json.dumps(macperms.diagnose(), ensure_ascii=False, indent=2))
+        return
     # Launched with no arguments (e.g. double-clicked .app): run the GUI, which
     # keeps a Tk event loop on the main thread (so the app never appears frozen)
     # and serves on a background thread.
