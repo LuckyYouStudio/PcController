@@ -26,6 +26,7 @@ from . import protocol as P
 from . import discovery
 from . import identity
 from . import macperms
+from . import p2p
 from . import relayclient
 from .clipboard import ClipboardSync
 from .config import (
@@ -267,6 +268,46 @@ def _split_hostport(text, default_port):
         except ValueError:
             return host, default_port
     return text, default_port
+
+
+def serve_via_p2p(cfg, server_host, server_port, session_id,
+                  on_status=None, stop_event=None, session_handler=None):
+    """Make this machine reachable over the internet via signaling+P2P (with
+    relay fallback), serving one controller at a time and reconnecting after
+    each session. Runs on a background thread alongside the LAN listener."""
+    if session_handler is None:
+        session_handler = lambda s: handle_connection(s, cfg)
+
+    def notify(msg):
+        print(f"[p2p-agent] {msg}")
+        if on_status is not None:
+            try:
+                on_status(msg)
+            except Exception:
+                pass
+
+    notify(f"已上线(远程ID {session_id}),等待远程控制端…")
+    while stop_event is None or not stop_event.is_set():
+        try:
+            sock, mode = p2p.establish(server_host, server_port, "agent",
+                                       session_id, timeout=30)
+        except ConnectionError:
+            continue   # nobody connected within the window; wait again
+        except Exception as exc:
+            notify(f"上线失败({exc});5 秒后重试")
+            if stop_event is not None and stop_event.wait(5):
+                break
+            continue
+        notify(f"远程控制端已接入(方式:{mode})")
+        try:
+            session_handler(sock)
+        except Exception as exc:
+            print(f"[p2p-agent] session error: {exc}")
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def _local_ip():

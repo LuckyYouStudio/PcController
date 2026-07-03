@@ -209,7 +209,8 @@ class UDPTransport:
 
 class _StreamSocket:
     """Minimal socket-like wrapper so protocol.send_msg / recv_msg run over the
-    reliable control channel."""
+    reliable control channel. The no-op setsockopt/settimeout let existing code
+    that expects a real socket (handle_connection, RemoteClient) use it as-is."""
 
     def __init__(self, transport):
         self._t = transport
@@ -219,6 +220,12 @@ class _StreamSocket:
 
     def recv(self, n):
         return self._t.recv_stream(n)
+
+    def setsockopt(self, *args, **kwargs):
+        pass
+
+    def settimeout(self, *args, **kwargs):
+        pass
 
     def close(self):
         self._t.close()

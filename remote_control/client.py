@@ -22,7 +22,7 @@ from PIL import Image, ImageTk
 from . import protocol as P
 from . import clientutil as U
 from . import discovery
-from . import relayclient
+from . import p2p
 from .clipboard import ClipboardSync
 from .config import DEFAULT_PORT, DEFAULT_PASSWORD, DEFAULT_RELAY_PORT
 
@@ -65,9 +65,10 @@ class RemoteClient:
     # -- connection ---------------------------------------------------------
     def connect(self):
         if self._relay is not None:
-            # reach the agent through the public relay (works across the internet)
-            self.sock = relayclient.connect_controller(
-                self._relay[0], self._relay[1], self._relay[2])
+            # reach the agent over the internet: try direct P2P (signaling +
+            # hole punch) and fall back to relay through the same server
+            self.sock, self._mode = p2p.establish(
+                self._relay[0], self._relay[1], "controller", self._relay[2])
         else:
             self.sock = socket.create_connection((self.host, self.port), timeout=10)
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

@@ -23,7 +23,7 @@ from . import macperms
 from .config import ServerConfig, DEFAULT_RELAY_PORT
 from .input_handler import InputHandler
 from .server import (
-    _gui_session, serve_via_relay, _local_ip, _split_hostport, _launch_control,
+    _gui_session, serve_via_p2p, _local_ip, _split_hostport, _launch_control,
 )
 
 _PW_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"   # no ambiguous 0/o/1/l
@@ -121,9 +121,9 @@ def run_home_gui(base_args):
         rs = threading.Event()
         state["relay_stop"] = rs
         threading.Thread(
-            target=serve_via_relay, args=(cfg, rhost, rport, my_id),
+            target=serve_via_p2p, args=(cfg, rhost, rport, my_id),
             kwargs={"on_status": lambda m: ui_q.put(m), "stop_event": rs,
-                    "session_handler": lambda s: run_session(s, "远程(中转)")},
+                    "session_handler": lambda s: run_session(s, "远程")},
             daemon=True).start()
 
     def copy_text(text):
