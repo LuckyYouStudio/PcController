@@ -20,7 +20,7 @@ import threading
 from . import discovery
 from . import identity
 from . import macperms
-from .config import ServerConfig, DEFAULT_RELAY_PORT
+from .config import ServerConfig, DEFAULT_RELAY_PORT, DEFAULT_SERVER
 from .input_handler import InputHandler
 from .server import (
     _gui_session, serve_via_p2p, _local_ip, _split_hostport, _launch_control,
@@ -233,7 +233,7 @@ def run_home_gui(base_args):
     tk.Label(net, text="中转服务器:").grid(row=0, column=0, sticky="e", pady=3)
     relay_entry = tk.Entry(net, width=26)
     relay_entry.grid(row=0, column=1, sticky="w", pady=3)
-    relay_entry.insert(0, getattr(base_args, "relay", "") or "")
+    relay_entry.insert(0, getattr(base_args, "relay", "") or DEFAULT_SERVER)
     tk.Button(net, text="应用", command=lambda: set_relay(relay_entry.get())).grid(
         row=0, column=2, padx=4)
 
@@ -246,15 +246,19 @@ def run_home_gui(base_args):
     tk.Label(box, text="您的 ID", bg="#f2f2f4", fg="#666").grid(row=0, column=0, sticky="w")
     tk.Label(box, text=_fmt_id(my_id), bg="#f2f2f4",
              font=("", 16, "bold")).grid(row=1, column=0, sticky="w", padx=(0, 24))
-    tk.Label(box, text="密码", bg="#f2f2f4", fg="#666").grid(row=0, column=1, sticky="w")
+    tk.Label(box, text="密码(可直接修改)", bg="#f2f2f4", fg="#666").grid(
+        row=0, column=1, sticky="w")
     pw_var = tk.StringVar(value=cfg.password)
-    tk.Label(box, textvariable=pw_var, bg="#f2f2f4",
-             font=("", 16, "bold")).grid(row=1, column=1, sticky="w")
+    tk.Entry(box, textvariable=pw_var, font=("", 15, "bold"), width=12,
+             relief="solid", bd=1).grid(row=1, column=1, sticky="w")
+
+    def on_pw_change(*_a):
+        cfg.password = pw_var.get()   # take effect on the next connection
+        refresh_info()
+    pw_var.trace_add("write", on_pw_change)
 
     def regen_pw():
-        cfg.password = _gen_password()
-        pw_var.set(cfg.password)
-        refresh_info()
+        pw_var.set(_gen_password())   # trace updates cfg.password + info
     tk.Button(box, text="↻", width=3, command=regen_pw).grid(row=1, column=2, padx=(16, 2))
     tk.Button(box, text="复制", width=5,
               command=lambda: copy_text(f"ID {my_id}  密码 {cfg.password}")).grid(
@@ -336,7 +340,7 @@ def run_home_gui(base_args):
     root.protocol("WM_DELETE_WINDOW", on_close)
     if start_serving():
         set_discoverable(True)
-        set_relay(getattr(base_args, "relay", "") or "")
+        set_relay(getattr(base_args, "relay", "") or DEFAULT_SERVER)  # auto-online
         refresh_info()
         pump()
     root.eval("tk::PlaceWindow . center")

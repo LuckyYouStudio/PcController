@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 DEFAULT_PORT = 50505
 DEFAULT_RELAY_PORT = 50510    # public relay/rendezvous server port
+DEFAULT_SERVER = "47.239.121.107:50510"   # our deployed rendezvous server
 DEFAULT_PASSWORD = "changeme"
 DEFAULT_FPS = 15
 DEFAULT_QUALITY = 60          # JPEG quality 1-95

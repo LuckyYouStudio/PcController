@@ -32,6 +32,8 @@ MAX_PAYLOAD = 1100      # bytes of data per UDP packet (safe under common MTU)
 WINDOW = 256            # reliable in-flight packets
 RTO = 0.20              # retransmit timeout (s)
 KEEP_FRAMES = 4         # in-progress frames to keep while reassembling
+KEEPALIVE = 2.0         # send a keepalive every 2s so an idle peer stays alive
+DEAD_TIMEOUT = 8.0      # no packet from the peer for this long -> peer is gone
 
 
 class UDPTransport:
@@ -58,6 +60,9 @@ class UDPTransport:
         self._frags = {}            # frame_id -> {idx: data}
         self._frame_q = []
         self._frame_cond = threading.Condition()
+
+        self._last_rx = time.time()   # last time any packet arrived from the peer
+        self._last_ka = 0.0           # last time we sent a keepalive
 
         self._sock.settimeout(RTO / 3.0)
         self._rx = threading.Thread(target=self._recv_loop, daemon=True)
@@ -125,9 +130,11 @@ class UDPTransport:
             except OSError:
                 if self._closed:
                     break
-                self._retransmit()
+                self._maintain()
                 continue
+            self._last_rx = time.time()   # any packet = peer is alive
             if not data:
+                self._maintain()
                 continue
             tag = data[0]
             if tag == TAG_CTRL:
@@ -136,8 +143,19 @@ class UDPTransport:
                 self._on_ack(data)
             elif tag == TAG_FRAME:
                 self._on_frag(data)
-            # TAG_PUNCH / unknown: ignore
-            self._retransmit()
+            # TAG_PUNCH / unknown: ignore (still counts as liveness)
+            self._maintain()
+
+    def _maintain(self):
+        """Keepalive + dead-peer detection + retransmit, run each rx tick."""
+        now = time.time()
+        if now - self._last_rx > DEAD_TIMEOUT:
+            self.close()   # peer vanished -> unblock recv so the session ends
+            return
+        if now - self._last_ka > KEEPALIVE:
+            self._last_ka = now
+            self._safe_send(bytes([TAG_PUNCH]))
+        self._retransmit()
 
     def _retransmit(self):
         now = time.time()
