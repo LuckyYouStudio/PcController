@@ -27,6 +27,11 @@ MSG_RELAY_HELLO = 0x10  # endpoint -> relay: payload = JSON {role, session}
 MSG_RELAY_OK = 0x11     # relay -> controller: paired, session bridged
 MSG_RELAY_ERROR = 0x12  # relay -> controller: payload = utf-8 reason
 
+# P2P signaling (endpoint <-> signaling server, over TCP)
+MSG_SIGNAL_HELLO = 0x20  # peer -> server: JSON {role, session}
+MSG_SIGNAL_PEER = 0x21   # server -> peer: JSON {endpoint: [ip, port]} of the peer
+MSG_SIGNAL_WAIT = 0x22   # server -> peer: waiting for the other side (optional)
+
 _HEADER = struct.Struct(">BI")
 SCREEN_INFO = struct.Struct(">II")  # width, height
 
