@@ -1,0 +1,5 @@
+* text=auto
+
+# Server-side scripts must stay LF or they break on Linux
+*.sh text eol=lf
+*.service text eol=lf
