@@ -17,6 +17,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# In a windowed / frozen build (e.g. a macOS .app or a --windowed exe) there is
+# no console, so sys.stdout / sys.stderr can be None and any print() would crash
+# the app. Point them at devnull so the code's many status prints are harmless.
+if sys.stdout is None or sys.stderr is None:
+    _null = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = _null
+    if sys.stderr is None:
+        sys.stderr = _null
+
 
 def _is_controller(argv):
     return any(flag in argv for flag in ("--control", "--host", "--relay", "--id"))
