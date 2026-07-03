@@ -337,15 +337,17 @@ def _gui_session(conn, cfg, inject_q):
             clip.stop()
 
 
-def _launch_control():
+def _launch_control(extra_args=None):
     """Spawn a controller instance (its own window) to control another machine.
-    Re-invokes this same program with --control so a frozen exe can relaunch
+    Re-invokes this same program (default: --control to show the picker; or an
+    explicit arg list like ['--host', ip, ...]) so a frozen exe can relaunch
     itself; falls back to python + this script when running from source."""
+    args = extra_args if extra_args is not None else ["--control"]
     try:
         if getattr(sys, "frozen", False):
-            cmd = [sys.argv[0], "--control"]
+            cmd = [sys.argv[0]] + args
         else:
-            cmd = [sys.executable, sys.argv[0], "--control"]
+            cmd = [sys.executable, sys.argv[0]] + args
         subprocess.Popen(cmd)
     except Exception as exc:
         print(f"[server] launch control failed: {exc}")
@@ -680,7 +682,8 @@ def main(argv=None):
     # keeps a Tk event loop on the main thread (so the app never appears frozen)
     # and serves on a background thread.
     if argv is None and len(sys.argv) == 1:
-        run_agent_gui(args)
+        from .homeapp import run_home_gui
+        run_home_gui(args)
         return
     cfg = ServerConfig(
         host=args.host,

@@ -28,8 +28,9 @@ def main():
         from remote_control.client import main as client_main
         client_main([a for a in argv if a != "--control"])
     else:
-        from remote_control.server import run_agent_gui, parse_args
-        run_agent_gui(parse_args([]))
+        from remote_control.server import parse_args
+        from remote_control.homeapp import run_home_gui
+        run_home_gui(parse_args([]))
 
 
 if __name__ == "__main__":
