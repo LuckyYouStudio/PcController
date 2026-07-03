@@ -28,6 +28,15 @@ from .server import (
 
 _PW_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"   # no ambiguous 0/o/1/l
 
+# video presets — internet links (and a small relay VPS) can't carry full-res
+# 15fps, so default to something lighter and let the user pick.
+QUALITY_PRESETS = {
+    "流畅": {"scale": 0.5, "quality": 35, "fps": 10},
+    "均衡": {"scale": 0.75, "quality": 50, "fps": 12},
+    "高清": {"scale": 1.0, "quality": 70, "fps": 15},
+}
+_DEFAULT_QUALITY = "均衡"
+
 
 def _gen_password():
     return "".join(random.choices(_PW_ALPHABET, k=8))
@@ -56,6 +65,13 @@ def run_home_gui(base_args):
     )
     state = {"srv": None, "handler": None, "busy": threading.Lock(),
              "disc_stop": None, "relay_stop": None}
+
+    def set_quality(name):
+        p = QUALITY_PRESETS.get(name)
+        if p:
+            cfg.scale, cfg.quality, cfg.fps = p["scale"], p["quality"], p["fps"]
+
+    set_quality(_DEFAULT_QUALITY)   # lighter default; full-res kills internet links
 
     # ---------------- serving (auto-start) ----------------
     def notify(m):
@@ -134,6 +150,16 @@ def run_home_gui(base_args):
             pass
 
     # ---------------- UI ----------------
+    top = tk.Frame(root, padx=10)
+    top.pack(fill="x", pady=(8, 0))
+    tk.Label(top, text="画质:").pack(side="left")
+    q_var = tk.StringVar(value=_DEFAULT_QUALITY)
+    for _name in ("流畅", "均衡", "高清"):
+        tk.Radiobutton(top, text=_name, value=_name, variable=q_var,
+                       command=lambda: set_quality(q_var.get())).pack(side="left")
+    tk.Label(top, text="(卡顿就选「流畅」;改画质后重新连接才生效)",
+             fg="#888").pack(side="left", padx=(8, 0))
+
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True, padx=10, pady=10)
 
