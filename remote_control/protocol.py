@@ -22,6 +22,11 @@ MSG_FRAME = 0x05        # server -> client: payload = JPEG bytes
 MSG_INPUT = 0x06        # client -> server: payload = utf-8 JSON input event
 MSG_CLIPBOARD = 0x07    # both directions: payload = utf-8 clipboard text
 
+# relay handshake (endpoint <-> relay, before the session is bridged)
+MSG_RELAY_HELLO = 0x10  # endpoint -> relay: payload = JSON {role, session}
+MSG_RELAY_OK = 0x11     # relay -> controller: paired, session bridged
+MSG_RELAY_ERROR = 0x12  # relay -> controller: payload = utf-8 reason
+
 _HEADER = struct.Struct(">BI")
 SCREEN_INFO = struct.Struct(">II")  # width, height
 

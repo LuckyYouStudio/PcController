@@ -11,7 +11,9 @@ monitor, and replays the mouse / keyboard events it receives.
 import argparse
 import io
 import json
+import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -22,11 +24,14 @@ from PIL import Image
 
 from . import protocol as P
 from . import discovery
+from . import identity
 from . import macperms
+from . import relayclient
 from .clipboard import ClipboardSync
 from .config import (
     ServerConfig,
     DEFAULT_PORT,
+    DEFAULT_RELAY_PORT,
     DEFAULT_PASSWORD,
     DEFAULT_FPS,
     DEFAULT_QUALITY,
@@ -211,6 +216,59 @@ def serve(cfg, sock=None, on_status=None):
         srv.close()
 
 
+def serve_via_relay(cfg, relay_host, relay_port, session_id,
+                    on_status=None, stop_event=None, session_handler=None):
+    """Register with a public relay and serve remote controllers, reconnecting
+    after each session. Runs until ``stop_event`` is set. Meant to run on a
+    background thread alongside the LAN listener.
+
+    ``session_handler(sock)`` runs one paired session; it defaults to
+    ``handle_connection`` but the GUI passes a main-thread-safe handler.
+    """
+    if session_handler is None:
+        session_handler = lambda s: handle_connection(s, cfg)
+
+    def notify(msg):
+        print(f"[relay-agent] {msg}")
+        if on_status is not None:
+            try:
+                on_status(msg)
+            except Exception:
+                pass
+
+    while stop_event is None or not stop_event.is_set():
+        try:
+            sock = relayclient.connect_agent(relay_host, relay_port, session_id)
+        except Exception as exc:
+            notify(f"连接中转失败({exc});5 秒后重试")
+            if stop_event is not None and stop_event.wait(5):
+                break
+            elif stop_event is None:
+                time.sleep(5)
+            continue
+        notify(f"已在中转注册(远程ID {session_id}),等待远程控制端…")
+        try:
+            session_handler(sock)   # blocks until a controller pairs + ends
+        except Exception as exc:
+            print(f"[relay-agent] session error: {exc}")
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _split_hostport(text, default_port):
+    text = text.strip()
+    if ":" in text:
+        host, _, port = text.rpartition(":")
+        try:
+            return host, int(port)
+        except ValueError:
+            return host, default_port
+    return text, default_port
+
+
 def _local_ip():
     """Best-effort LAN IP of this machine (for display in the status window)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -279,6 +337,20 @@ def _gui_session(conn, cfg, inject_q):
             clip.stop()
 
 
+def _launch_control():
+    """Spawn a controller instance (its own window) to control another machine.
+    Re-invokes this same program with --control so a frozen exe can relaunch
+    itself; falls back to python + this script when running from source."""
+    try:
+        if getattr(sys, "frozen", False):
+            cmd = [sys.argv[0], "--control"]
+        else:
+            cmd = [sys.executable, sys.argv[0], "--control"]
+        subprocess.Popen(cmd)
+    except Exception as exc:
+        print(f"[server] launch control failed: {exc}")
+
+
 def run_agent_gui(base_args):
     """Double-click entry point: a single Tk window that first collects
     port/password, then turns into a live status panel while the server runs on
@@ -291,7 +363,7 @@ def run_agent_gui(base_args):
     from tkinter import messagebox
 
     root = tk.Tk()
-    root.title("被控端 / Agent")
+    root.title("PcController")
     root.resizable(False, False)
     body = tk.Frame(root, padx=22, pady=18)
     body.pack()
@@ -309,16 +381,21 @@ def run_agent_gui(base_args):
         tk.Label(body, text="设置密码 (password):").grid(row=1, column=0, sticky="e", pady=5)
         pw_var = tk.StringVar(value=base_args.password)
         tk.Entry(body, textvariable=pw_var, width=22).grid(row=1, column=1, pady=5)
-        tk.Label(body, text="控制端连接时填:本机 IP + 下面的端口和密码",
-                 fg="#666").grid(row=2, column=0, columnspan=2, pady=(6, 0))
+        tk.Label(body, text="中转服务器 (远程用,可留空):").grid(row=2, column=0, sticky="e", pady=5)
+        relay_var = tk.StringVar(value=getattr(base_args, "relay", "") or "")
+        tk.Entry(body, textvariable=relay_var, width=22).grid(row=2, column=1, pady=5)
+        tk.Label(body, text="局域网:对方填你的 IP;远程:填中转地址,对方用你的远程ID",
+                 fg="#666", wraplength=320, justify="left").grid(
+                     row=3, column=0, columnspan=2, pady=(6, 0))
         btns = tk.Frame(body)
-        btns.grid(row=3, column=0, columnspan=2, pady=(12, 0))
+        btns.grid(row=4, column=0, columnspan=2, pady=(12, 0))
 
         def on_start():
             try:
                 port = int(port_var.get().strip() or DEFAULT_PORT)
             except ValueError:
                 port = DEFAULT_PORT
+            state["relay_host_raw"] = relay_var.get().strip()
             cfg = ServerConfig(
                 host=base_args.host, port=port, password=pw_var.get(),
                 fps=base_args.fps, quality=base_args.quality,
@@ -408,6 +485,7 @@ def run_agent_gui(base_args):
         root.unbind("<Return>")
         # pynput controllers MUST be created on the main thread (this thread)
         state["handler"] = InputHandler(1, 1) if cfg.input_enabled else None
+        busy = threading.Lock()   # serve one controller at a time (LAN or relay)
 
         # advertise on the LAN so controllers can find this agent by name
         disc_stop = threading.Event()
@@ -416,38 +494,76 @@ def run_agent_gui(base_args):
             target=discovery.run_responder, args=(cfg.port, disc_stop), daemon=True
         ).start()
 
-        def bg():
-            def notify(m):
-                print(m)
-                ui_q.put(m)
+        def notify(m):
+            print(m)
+            ui_q.put(m)
+
+        def run_session(sock, who):
+            with busy:
+                notify(f"控制端已连接:{who}")
+                try:
+                    _gui_session(sock, cfg, inject_q)
+                except Exception as exc:
+                    print(f"[server] session error: {exc}")
+                finally:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    inject_q.put(("release", None))
+                    notify("控制端已断开 — 继续等待…")
+
+        def lan_bg():
             notify(f"监听中 {cfg.host}:{cfg.port} — 等待控制端连接…")
             try:
                 while True:
                     c, addr = srv.accept()
-                    notify(f"控制端已连接：{addr[0]}:{addr[1]}")
-                    try:
-                        _gui_session(c, cfg, inject_q)
-                    except Exception as exc:
-                        print(f"[server] session error: {exc}")
-                    finally:
-                        c.close()
-                        inject_q.put(("release", None))
-                        notify("控制端已断开 — 继续等待…")
+                    run_session(c, f"{addr[0]}:{addr[1]} (局域网)")
             except OSError:
                 pass  # listening socket closed on shutdown
 
-        threading.Thread(target=bg, daemon=True).start()
+        threading.Thread(target=lan_bg, daemon=True).start()
+
+        # remote control via relay (optional)
+        relay_raw = state.get("relay_host_raw") or ""
+        if relay_raw:
+            rhost, rport = _split_hostport(relay_raw, DEFAULT_RELAY_PORT)
+            sid = identity.get_or_create_id()
+            state["session_id"] = sid
+            relay_stop = threading.Event()
+            state["relay_stop"] = relay_stop
+            threading.Thread(
+                target=serve_via_relay,
+                args=(cfg, rhost, rport, sid),
+                kwargs={"on_status": lambda m: ui_q.put(m),
+                        "stop_event": relay_stop,
+                        "session_handler":
+                            lambda s: run_session(s, f"远程 (中转 {rhost})")},
+                daemon=True).start()
+
         show_status(cfg)
 
     def show_status(cfg):
         for w in body.winfo_children():
             w.destroy()
-        tk.Label(body, text="✅ 被控端正在运行", font=("", 15, "bold")).pack()
-        tk.Label(body, text=f"本机 IP: {_local_ip()}", fg="#0a7a3a",
-                 font=("", 13, "bold")).pack(pady=(10, 0))
-        tk.Label(body, text=f"端口: {cfg.port}      密码: {cfg.password}").pack(pady=(2, 0))
+        tk.Label(body, text="PcController 正在运行", font=("", 15, "bold")).pack()
+        tk.Label(body, text="别人可以控制这台电脑:", fg="#666").pack(pady=(8, 0))
+        tk.Label(body, text=f"局域网 IP: {_local_ip()}    端口: {cfg.port}",
+                 fg="#0a7a3a", font=("", 13, "bold")).pack(pady=(2, 0))
+        tk.Label(body, text=f"密码: {cfg.password}").pack(pady=(2, 0))
+        if state.get("session_id"):
+            tk.Label(body, text=f"远程 ID: {state['session_id']}",
+                     fg="#0a55aa", font=("", 13, "bold")).pack(pady=(4, 0))
+            tk.Label(body, text="(远程:对方填中转地址 + 此远程ID + 密码)",
+                     fg="#999").pack()
+
+        tk.Frame(body, height=1, bg="#ccc").pack(fill="x", pady=(12, 8))
+        tk.Label(body, text="控制别的电脑:", fg="#666").pack()
+        tk.Button(body, text="连接并控制对方…",
+                  command=lambda: _launch_control()).pack(pady=(4, 2))
+
         status_var = tk.StringVar(value="启动中…")
-        tk.Label(body, textvariable=status_var, fg="#666", wraplength=300).pack(pady=(12, 0))
+        tk.Label(body, textvariable=status_var, fg="#666", wraplength=300).pack(pady=(10, 0))
 
         # live permission warning (helps if the user chose "仍然启动")
         warn_var = tk.StringVar(value="")
@@ -510,6 +626,9 @@ def run_agent_gui(base_args):
         disc_stop = state.get("disc_stop")
         if disc_stop is not None:
             disc_stop.set()  # stop advertising on the LAN
+        relay_stop = state.get("relay_stop")
+        if relay_stop is not None:
+            relay_stop.set()  # stop registering with the relay
         srv = state["srv"]
         if srv is not None:
             try:
@@ -544,6 +663,8 @@ def parse_args(argv=None):
                    help="mss monitor index (1 = primary)")
     p.add_argument("--no-clipboard", action="store_false", dest="clipboard",
                    help="disable clipboard sync")
+    p.add_argument("--relay", default="",
+                   help="relay server host[:port] to register with for remote control")
     p.add_argument("--check-perms", action="store_true",
                    help="print macOS permission diagnostics and exit")
     return p.parse_args(argv)

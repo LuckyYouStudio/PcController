@@ -22,8 +22,9 @@ from PIL import Image, ImageTk
 from . import protocol as P
 from . import clientutil as U
 from . import discovery
+from . import relayclient
 from .clipboard import ClipboardSync
-from .config import DEFAULT_PORT, DEFAULT_PASSWORD
+from .config import DEFAULT_PORT, DEFAULT_PASSWORD, DEFAULT_RELAY_PORT
 
 MOVE_MIN_INTERVAL = 0.010  # throttle mouse-move messages to ~100/s
 IS_MAC = sys.platform == "darwin"
@@ -31,11 +32,12 @@ IS_WIN = sys.platform.startswith("win")
 
 
 class RemoteClient:
-    def __init__(self, host, port, password, clipboard=True):
+    def __init__(self, host, port, password, clipboard=True, relay=None):
         self.host = host
         self.port = port
         self.password = password
         self._clipboard_enabled = clipboard
+        self._relay = relay          # (relay_host, relay_port, session_id) or None
         self._clip = None            # ClipboardSync (started after connect)
 
         self.sock = None
@@ -62,9 +64,14 @@ class RemoteClient:
 
     # -- connection ---------------------------------------------------------
     def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), timeout=10)
-        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.sock.settimeout(None)
+        if self._relay is not None:
+            # reach the agent through the public relay (works across the internet)
+            self.sock = relayclient.connect_controller(
+                self._relay[0], self._relay[1], self._relay[2])
+        else:
+            self.sock = socket.create_connection((self.host, self.port), timeout=10)
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.sock.settimeout(None)
 
         P.send_msg(self.sock, P.MSG_AUTH, self.password.encode("utf-8"))
         msg_type, _ = P.recv_msg(self.sock)
@@ -186,7 +193,7 @@ class RemoteClient:
     # -- window lifecycle ---------------------------------------------------
     def _build_window(self):
         self.root = tk.Tk()
-        self.root.title(f"Remote Control - {self.host}:{self.port} "
+        self.root.title(f"Remote Control - {self._endpoint()} "
                         f"({self.remote_w}x{self.remote_h})")
         init_w = min(self.remote_w, 1280) or 1280
         init_h = min(self.remote_h, 800) or 800
@@ -280,7 +287,10 @@ class RemoteClient:
         else:
             tip = "组合键有限 (未启用全局钩子)  |  Ctrl+Alt+Q 断开"
         self._status_var.set(
-            f"{self.host}:{self.port}  {self.remote_w}x{self.remote_h}  |  {tip}")
+            f"{self._endpoint()}  {self.remote_w}x{self.remote_h}  |  {tip}")
+
+    def _endpoint(self):
+        return f"{self.host}:{self.port}" if self.port else str(self.host)
 
     def _request_stop(self):
         self._running = False   # render loop will pick this up and shut down
@@ -355,16 +365,26 @@ def connection_manager(default_port=DEFAULT_PORT, default_password=DEFAULT_PASSW
 
     form = tk.Frame(outer)
     form.grid(row=3, column=0, columnspan=2, pady=(8, 0), sticky="we")
-    tk.Label(form, text="IP:").grid(row=0, column=0, sticky="e", pady=3)
+    tk.Label(form, text="局域网 IP:").grid(row=0, column=0, sticky="e", pady=3)
     host_var = tk.StringVar()
     tk.Entry(form, textvariable=host_var, width=26).grid(row=0, column=1, pady=3)
     tk.Label(form, text="端口:").grid(row=1, column=0, sticky="e", pady=3)
     port_var = tk.StringVar(value=str(default_port))
     tk.Entry(form, textvariable=port_var, width=26).grid(row=1, column=1, pady=3)
-    tk.Label(form, text="密码:").grid(row=2, column=0, sticky="e", pady=3)
+
+    tk.Label(form, text="— 或 远程(通过中转)—", fg="#888").grid(
+        row=2, column=0, columnspan=2, pady=(6, 2))
+    tk.Label(form, text="中转服务器:").grid(row=3, column=0, sticky="e", pady=3)
+    relay_var = tk.StringVar()
+    tk.Entry(form, textvariable=relay_var, width=26).grid(row=3, column=1, pady=3)
+    tk.Label(form, text="对方远程ID:").grid(row=4, column=0, sticky="e", pady=3)
+    rid_var = tk.StringVar()
+    tk.Entry(form, textvariable=rid_var, width=26).grid(row=4, column=1, pady=3)
+
+    tk.Label(form, text="密码:").grid(row=5, column=0, sticky="e", pady=(6, 3))
     pw_var = tk.StringVar(value=default_password)
     pw_entry = tk.Entry(form, textvariable=pw_var, width=26, show="*")
-    pw_entry.grid(row=2, column=1, pady=3)
+    pw_entry.grid(row=5, column=1, pady=(6, 3))
 
     def populate(found):
         machines.extend(found)
@@ -398,9 +418,16 @@ def connection_manager(default_port=DEFAULT_PORT, default_password=DEFAULT_PASSW
 
     def on_connect(_evt=None):
         on_select()
+        relay = relay_var.get().strip()
+        rid = rid_var.get().strip()
+        if relay and rid:   # remote control via relay takes precedence
+            rhost, rport = split_hostport(relay, DEFAULT_RELAY_PORT)
+            result.update(relay=(rhost, rport, rid), password=pw_var.get())
+            win.destroy()
+            return
         host = host_var.get().strip()
         if not host:
-            status.set("请先选择或输入 IP")
+            status.set("请选择/输入局域网 IP,或填中转服务器+远程ID")
             return
         try:
             port = int(port_var.get().strip() or DEFAULT_PORT)
@@ -434,20 +461,49 @@ def parse_args(argv=None):
     p.add_argument("--password", default=DEFAULT_PASSWORD)
     p.add_argument("--no-clipboard", action="store_false", dest="clipboard",
                    help="disable clipboard sync")
+    p.add_argument("--relay", default=None,
+                   help="relay server host[:port] for remote (internet) control")
+    p.add_argument("--id", dest="session", default=None,
+                   help="partner remote ID (used with --relay)")
     return p.parse_args(argv)
+
+
+def split_hostport(text, default_port):
+    """Parse 'host' or 'host:port' -> (host, port)."""
+    text = text.strip()
+    if ":" in text:
+        host, _, port = text.rpartition(":")
+        try:
+            return host, int(port)
+        except ValueError:
+            return host, default_port
+    return text, default_port
 
 
 def main(argv=None):
     args = parse_args(argv)
     host, port, password = args.host, args.port, args.password
+    relay = None
 
-    if host is None:  # double-clicked / no --host: show the LAN picker
+    if args.relay:  # remote control via the relay
+        if not args.session:
+            _fatal("远程连接需要用 --id 指定对方的远程ID")
+            return
+        rhost, rport = split_hostport(args.relay, DEFAULT_RELAY_PORT)
+        relay = (rhost, rport, args.session)
+        host, port = f"远程 {args.session}", 0
+    elif host is None:  # double-clicked / no --host: show the picker
         chosen = connection_manager(default_port=port, default_password=password)
         if chosen is None:
             return
-        host, port, password = chosen["host"], chosen["port"], chosen["password"]
+        password = chosen["password"]
+        if chosen.get("relay"):
+            relay = chosen["relay"]
+            host, port = f"远程 {relay[2]}", 0
+        else:
+            host, port = chosen["host"], chosen["port"]
 
-    client = RemoteClient(host, port, password, clipboard=args.clipboard)
+    client = RemoteClient(host, port, password, clipboard=args.clipboard, relay=relay)
     try:
         client.run()
     except ConnectionRefusedError:

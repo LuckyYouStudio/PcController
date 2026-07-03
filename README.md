@@ -17,6 +17,8 @@
 纯 Python,依赖 `mss`(截屏)、`pynput`(输入注入)、`Pillow`(图像编码)、`tkinter`(界面)。这几个库在 Windows / macOS / Linux 上都能用,所以同一份代码三端通用。归一化坐标传输,两台机器分辨率不同也没关系。
 
 ### 主要特性
+- **一体化 App(像 TeamViewer)**:一个程序 `pccontroller.py` 同时具备"被控"和"控制"——启动后后台常驻等别人来控制你(显示你的局域网 IP / 端口 / 密码 / 远程ID),界面上又能点"连接并控制对方"去控制别人。
+- **远程控制(跨公网,中转穿透)**:自建中转服务器 `relay_server.py`(跑在有公网 IP 的 VPS 上),被控端和控制端都主动连中转、按远程ID 配对,能穿透 NAT。详见下方"远程控制"。
 - **局域网自动发现**:被控端用 UDP 广播(端口 50506)通告自己;控制端打开时自动扫描,按**电脑名 + IP** 列出可控机器,双击即连(仍需密码)。
 - **组合键转发(TeamViewer 式)**:控制端在 **Windows** 上用底层键盘钩子(`WH_KEYBOARD_LL`),窗口处于前台时把 `Alt+Tab`、`Win`、`Ctrl+...` 等**所有组合键转发到远程并屏蔽本机**。顶部工具栏可开关"键盘捕获",并有"发送 Ctrl+Alt+Del"按钮(该组合系统不允许钩子拦截,故用按钮直发)。非 Windows 控制端回退到 Tk 键绑定(无法拦截系统级全局热键)。
 - **剪贴板同步**:两端文本剪贴板**双向自动同步**——在一台复制,另一台直接粘贴。基于 `pyperclip`(Windows ctypes / macOS pbcopy / Linux xclip),自带去重防回环;可用 `--no-clipboard` 关闭。
@@ -62,9 +64,20 @@ python3 -m pip install -r requirements.txt
 
 ---
 
-## 二、运行(两步)
+## 二、运行
 
-### 1) 在**被控端**(要被控制的电脑)启动 agent
+### 推荐:一体化 App(control + 被 control 一体)
+一个程序,双击/直接运行即可,既能被别人控制,也能控制别人:
+```bash
+python pccontroller.py          # Windows 用 .venv\Scripts\python.exe
+```
+- 首屏设置端口/密码(远程控制再填中转服务器,可留空)→ 启动。
+- 主界面显示本机 **局域网 IP / 端口 / 密码 / 远程ID**(别人用这些来控制你)。
+- 点 **「连接并控制对方…」** 打开选择器:局域网里双击发现到的电脑,或填"中转服务器 + 对方远程ID"走远程。
+
+### 或:分开的两个程序(老方式,仍可用)
+
+#### 1) 在**被控端**(要被控制的电脑)启动 agent
 ```bash
 # macOS / Linux
 python3 agent.py --password 你的密码
@@ -76,7 +89,7 @@ python agent.py --password 你的密码
 - Windows: `ipconfig`(找 IPv4 地址)
 - Linux: `hostname -I`
 
-### 2) 在**控制端**(你操作的电脑)启动 controller
+#### 2) 在**控制端**(你操作的电脑)启动 controller
 ```bash
 # Windows(用本项目自带 venv)
 C:\test\PcController\.venv\Scripts\python.exe controller.py --host 192.168.1.50 --password 你的密码
@@ -87,6 +100,29 @@ python3 controller.py --host 192.168.1.50 --password 你的密码
 - **鼠标**:窗口内移动/点击/滚轮 = 操作对方。
 - **键盘**:窗口获得焦点后直接输入。修饰键**按物理键原样转发**(见下方"跨平台按键说明")。
 - **退出**:关闭窗口,或按 `Ctrl+Alt+Q`。断开时被控端会自动释放所有按下的键,不会卡键。
+
+---
+
+## 远程控制(跨公网,中转服务器)
+
+局域网直连需要两台在同一网络;跨公网时被控端多在 NAT 后面,无法被直连,所以用**自建中转**穿透。
+
+**① 在一台有公网 IP 的服务器(VPS)上跑中转:**
+```bash
+python relay_server.py --port 50510    # 记得在防火墙/安全组放行该端口
+```
+
+**② 被控端**:一体化 App 首屏"中转服务器"填 `你的VPS地址:50510` 再启动;主界面会显示本机的**远程ID**(9 位数字,持久不变)。命令行等价:
+```bash
+python agent.py --relay 你的VPS地址:50510 --password 你的密码   # 注:CLI 的 relay 注册在一体化 App 里
+```
+
+**③ 控制端**:在"连接并控制对方"选择器的**远程**区填 `中转服务器地址` + `对方远程ID` + `密码`,连接。命令行等价:
+```bash
+python controller.py --relay 你的VPS地址:50510 --id 对方远程ID --password 密码
+```
+
+中转只做**字节转发**、按会话 ID 配对(它能看到字节流,请用你信任的服务器)。密码仍在两端校验,中转拿不到可用凭据。
 
 ---
 
@@ -146,21 +182,30 @@ python -m unittest discover -s tests -v
 
 ## 七、安全说明
 
-- 明文 TCP 传输,仅供**可信局域网**使用,勿暴露公网。
-- 务必修改默认密码 `changeme`。一次只接受一个控制端连接。
+- 明文 TCP 传输(经中转也是明文)。仅供**可信网络 / 可信中转**使用,务必修改默认密码 `changeme`。
+- 一次只服务一个控制端(局域网或远程)。局域网发现走 UDP 50506,中转默认 50510。
 
 ## 八、项目结构
 
 ```
 remote_control/
-  protocol.py       # TCP 定长头消息 framing
+  protocol.py       # TCP 定长头消息 framing(含中转握手消息)
   config.py         # 默认参数 + ServerConfig
   input_handler.py  # 输入事件 -> pynput 注入(含断开释放,防卡键)
-  server.py         # 被控端:截屏 + 注入(跨平台)
-  client.py         # 控制端:Tkinter GUI(跨平台滚轮/按键)
+  clipboard.py      # 跨平台剪贴板双向同步
+  discovery.py      # 局域网 UDP 广播发现
+  identity.py       # 持久化远程ID(类似 TeamViewer ID)
+  relay.py          # 中转/会合服务器(跑在公网 VPS)
+  relayclient.py    # 端侧中转握手(agent / controller)
+  winhook.py        # Windows 全局键盘钩子(组合键捕获)
+  macperms.py       # macOS 权限检查/引导
+  server.py         # 被控端 + 一体化主界面(截屏/注入/中转注册)
+  client.py         # 控制端 Tkinter GUI(局域网/远程选择器)
   clientutil.py     # 纯函数:坐标映射 / 滚轮 / 按键翻译
-agent.py            # 被控端入口(任意 OS)
-controller.py       # 控制端入口(任意 OS)
+pccontroller.py     # 一体化入口(推荐):control + 被 control
+agent.py            # 仅被控端入口
+controller.py       # 仅控制端入口
+relay_server.py     # 中转服务器入口(公网 VPS)
 smoke_test.py       # 回环自测
-tests/              # 单元 + 集成测试(29 项)
+tests/              # 单元 + 集成测试(46 项)
 ```
