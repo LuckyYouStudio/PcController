@@ -10,6 +10,11 @@ Modules:
     clientutil    - pure helpers for the client (coordinate + key mapping)
     winhook       - Windows low-level keyboard hook (full combo capture)
     macperms      - macOS Screen Recording / Accessibility permission checks
+    clipboard     - cross-platform clipboard text sync
+    identity      - persistent per-machine remote ID
+    relay/relayclient - self-hosted rendezvous server for remote control
+    holepunch/udptransport - P2P (UDP hole punching + transport) foundation
+    homeapp       - unified TeamViewer-style home window (LAN + Internet tabs)
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
