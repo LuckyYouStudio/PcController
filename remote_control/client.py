@@ -300,6 +300,14 @@ class RemoteClient:
         self._running = False
 
     def _shutdown(self):
+        # Close the socket FIRST so the agent is notified (FIN) immediately, even
+        # if the hook/clipboard teardown below is slow. Otherwise the agent can
+        # stay stuck in this session and refuse the next controller.
+        try:
+            if self.sock:
+                self.sock.close()
+        except OSError:
+            pass
         if self._hook is not None:
             try:
                 self._hook.stop()
@@ -312,11 +320,6 @@ class RemoteClient:
             except Exception:
                 pass
             self._clip = None
-        try:
-            if self.sock:
-                self.sock.close()
-        except OSError:
-            pass
         if self.root is not None:
             try:
                 self.root.destroy()

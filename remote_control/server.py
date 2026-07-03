@@ -52,6 +52,29 @@ def _send(conn, lock, msg_type, payload):
             P.send_msg(conn, msg_type, payload)
 
 
+def _enable_keepalive(conn, idle=5, intvl=2, cnt=3):
+    """Turn on aggressive TCP keepalive so a dead / half-open controller (WiFi
+    drop, sleep, a close whose FIN never arrives) is detected in ~idle+intvl*cnt
+    seconds. Without this the agent's reader blocks on recv() forever and — if
+    the screen is static, so nothing is being sent — the session never ends,
+    which permanently blocks the next controller from connecting.
+    Best-effort and cross-platform: unknown options are skipped."""
+    try:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
+    for name, val in (("TCP_KEEPIDLE", idle),    # Linux
+                      ("TCP_KEEPALIVE", idle),   # macOS
+                      ("TCP_KEEPINTVL", intvl),
+                      ("TCP_KEEPCNT", cnt)):
+        opt = getattr(socket, name, None)
+        if opt is not None:
+            try:
+                conn.setsockopt(socket.IPPROTO_TCP, opt, val)
+            except OSError:
+                pass
+
+
 def _make_clipboard(conn, cfg, send_lock):
     """Create + start a ClipboardSync that mirrors this machine's clipboard to
     the controller, or return None if disabled."""
@@ -125,6 +148,7 @@ def _capture_loop(conn, cfg, monitor, stop, send_lock=None):
 def handle_connection(conn, cfg):
     """Run a full session on an already-connected socket."""
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    _enable_keepalive(conn)  # so a dead controller doesn't wedge the next connect
 
     msg_type, payload = P.recv_msg(conn)
     if msg_type != P.MSG_AUTH or payload.decode("utf-8", "ignore") != cfg.password:
@@ -332,6 +356,7 @@ def _gui_session(conn, cfg, inject_q):
     the process (SIGTRAP), so all pynput work is marshalled to the main thread.
     """
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    _enable_keepalive(conn)  # so a dead controller doesn't wedge the next connect
 
     msg_type, payload = P.recv_msg(conn)
     if msg_type != P.MSG_AUTH or payload.decode("utf-8", "ignore") != cfg.password:
