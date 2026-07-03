@@ -13,8 +13,9 @@ Modules:
     clipboard     - cross-platform clipboard text sync
     identity      - persistent per-machine remote ID
     relay/relayclient - self-hosted rendezvous server for remote control
-    holepunch/udptransport - P2P (UDP hole punching + transport) foundation
+    holepunch/udptransport - P2P (UDP hole punching + transport)
+    signaling/signalingclient/p2p - rendezvous + hole-punch establishment
     homeapp       - unified TeamViewer-style home window (LAN + Internet tabs)
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
