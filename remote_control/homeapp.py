@@ -321,6 +321,84 @@ def run_home_gui(base_args):
                 pass
         root.after(15, pump)
 
+    def prompt_permissions_if_needed():
+        """On launch, if macOS remote-control permissions are missing, trigger
+        the native prompts AND show a guided popup. The controlled machine is
+        usually unattended, so this must happen while someone is still there."""
+        if not macperms.IS_MAC:
+            return
+        st = macperms.status()
+        if st["screen_recording"] and st["accessibility"]:
+            return
+        # Fire the native system prompts right away (user asked for auto-popup).
+        macperms.request_screen_recording()
+        macperms.request_accessibility(True)
+
+        win = tk.Toplevel(root)
+        win.title("开启远程控制权限")
+        win.resizable(False, False)
+        win.transient(root)
+        frm = tk.Frame(win, padx=22, pady=18)
+        frm.pack()
+        tk.Label(frm, text="⚠️ 需要开启两项权限才能被远程控制",
+                 font=("", 14, "bold"), fg="#a33").pack()
+        tk.Label(frm, justify="left", fg="#555",
+                 text="否则对方连上后只看到黑屏、也无法控制这台电脑。\n"
+                      "请现在就开启——离开后没人在场就没法补授权了。").pack(pady=(4, 10))
+
+        rows = tk.Frame(frm)
+        rows.pack()
+        sr_var = tk.StringVar()
+        ax_var = tk.StringVar()
+
+        def refresh():
+            s = macperms.status()
+            sr_var.set("✅ 已开启" if s["screen_recording"] else "❌ 未开启")
+            ax_var.set("✅ 已开启" if s["accessibility"] else "❌ 未开启")
+            return s
+
+        tk.Label(rows, text="① 屏幕录制", font=("", 12)).grid(row=0, column=0, sticky="w", pady=4)
+        tk.Label(rows, textvariable=sr_var, width=8).grid(row=0, column=1, padx=8)
+        tk.Button(rows, text="开启", width=6,
+                  command=lambda: (macperms.request_screen_recording(),
+                                   macperms.open_screen_recording_settings(),
+                                   refresh())).grid(row=0, column=2)
+        tk.Label(rows, text="② 辅助功能", font=("", 12)).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Label(rows, textvariable=ax_var, width=8).grid(row=1, column=1, padx=8)
+        tk.Button(rows, text="开启", width=6,
+                  command=lambda: (macperms.request_accessibility(True),
+                                   macperms.open_accessibility_settings(),
+                                   refresh())).grid(row=1, column=2)
+
+        tk.Label(frm, wraplength=340, fg="#888", justify="left",
+                 text="提示:点「开启」→ 在系统设置里给 PcController 打开开关。\n"
+                      "⚠️ 屏幕录制开启后需退出 App 再重开才生效。").pack(pady=(12, 6))
+
+        btns = tk.Frame(frm)
+        btns.pack(pady=(4, 0))
+
+        def recheck():
+            s = refresh()
+            if s["screen_recording"] and s["accessibility"]:
+                win.destroy()
+        tk.Button(btns, text="我已开启,重新检测", command=recheck).pack(side="left", padx=6)
+        tk.Button(btns, text="稍后", command=win.destroy).pack(side="left", padx=6)
+
+        def auto():
+            if not win.winfo_exists():
+                return
+            s = refresh()
+            if s["screen_recording"] and s["accessibility"]:
+                win.destroy()
+                return
+            win.after(1500, auto)   # keep re-checking so ✅ shows + auto-closes
+
+        refresh()
+        win.after(1500, auto)
+        win.update_idletasks()
+        win.tk.call("tk::PlaceWindow", win._w, "center")
+        win.lift()
+
     def on_close():
         for key in ("disc_stop", "relay_stop"):
             if state[key] is not None:
@@ -343,5 +421,7 @@ def run_home_gui(base_args):
         set_relay(getattr(base_args, "relay", "") or DEFAULT_SERVER)  # auto-online
         refresh_info()
         pump()
+        # auto-detect permissions on launch; pop the guided dialog if missing
+        root.after(400, prompt_permissions_if_needed)
     root.eval("tk::PlaceWindow . center")
     root.mainloop()
