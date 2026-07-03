@@ -139,7 +139,8 @@ def run_home_gui(base_args):
         threading.Thread(
             target=serve_via_p2p, args=(cfg, rhost, rport, my_id),
             kwargs={"on_status": lambda m: ui_q.put(m), "stop_event": rs,
-                    "session_handler": lambda s: run_session(s, "远程")},
+                    "session_handler":
+                        lambda s, m: run_session(s, f"远程 · 方式:{m}")},
             daemon=True).start()
 
     def copy_text(text):
@@ -162,6 +163,11 @@ def run_home_gui(base_args):
 
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # status bar (shows 监听中 / 已连接 · 方式:p2p 或 relay)
+    status_var = tk.StringVar(value="启动中…")
+    tk.Label(root, textvariable=status_var, fg="#0a55aa", anchor="w").pack(
+        fill="x", padx=12, pady=(0, 6))
 
     # ===== 局域网 tab =====
     lan = tk.Frame(nb, padx=14, pady=12)
@@ -290,7 +296,7 @@ def run_home_gui(base_args):
     def pump():
         try:
             while True:
-                ui_q.get_nowait()
+                status_var.set(ui_q.get_nowait())
         except queue.Empty:
             pass
         handler = state["handler"]

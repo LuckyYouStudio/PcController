@@ -276,7 +276,7 @@ def serve_via_p2p(cfg, server_host, server_port, session_id,
     relay fallback), serving one controller at a time and reconnecting after
     each session. Runs on a background thread alongside the LAN listener."""
     if session_handler is None:
-        session_handler = lambda s: handle_connection(s, cfg)
+        session_handler = lambda s, m: handle_connection(s, cfg)
 
     def notify(msg):
         print(f"[p2p-agent] {msg}")
@@ -300,7 +300,7 @@ def serve_via_p2p(cfg, server_host, server_port, session_id,
             continue
         notify(f"远程控制端已接入(方式:{mode})")
         try:
-            session_handler(sock)
+            session_handler(sock, mode)
         except Exception as exc:
             print(f"[p2p-agent] session error: {exc}")
         finally:
