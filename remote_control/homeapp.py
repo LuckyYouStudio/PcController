@@ -104,6 +104,8 @@ def run_home_gui(base_args):
             return False
         state["srv"] = srv
         state["handler"] = InputHandler(1, 1) if cfg.input_enabled else None
+        # keep the Mac reachable: don't let it idle-sleep while online
+        state["nosleep"] = macperms.prevent_idle_sleep()
 
         def lan_bg():
             notify(f"监听中 :{cfg.port} — 等待连接…")
@@ -403,6 +405,11 @@ def run_home_gui(base_args):
         for key in ("disc_stop", "relay_stop"):
             if state[key] is not None:
                 state[key].set()
+        if state.get("nosleep") is not None:
+            try:
+                state["nosleep"].terminate()   # let the Mac idle-sleep again
+            except Exception:
+                pass
         if state["srv"] is not None:
             try:
                 state["srv"].close()

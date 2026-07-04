@@ -18,4 +18,4 @@ Modules:
     homeapp       - unified TeamViewer-style home window (LAN + Internet tabs)
 """
 
-__version__ = "1.3.3"
+__version__ = "1.3.4"

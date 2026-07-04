@@ -156,6 +156,10 @@ def handle_connection(conn, cfg):
         return
     P.send_msg(conn, P.MSG_AUTH_OK)
 
+    # macOS: a slept display captures black and synthetic input won't wake it —
+    # wake it now and keep it awake for the session.
+    display_wake = macperms.prevent_display_sleep()
+
     monitor = _get_monitor(cfg.monitor)
     width, height = monitor["width"], monitor["height"]
     P.send_msg(conn, P.MSG_SCREEN_INFO, P.SCREEN_INFO.pack(width, height))
@@ -181,6 +185,11 @@ def handle_connection(conn, cfg):
             clip.stop()
         if handler is not None:
             handler.release_all()
+        if display_wake is not None:
+            try:
+                display_wake.terminate()
+            except Exception:
+                pass
 
 
 def serve(cfg, sock=None, on_status=None):
@@ -211,6 +220,9 @@ def serve(cfg, sock=None, on_status=None):
         target=discovery.run_responder, args=(cfg.port, disc_stop), daemon=True
     ).start()
 
+    # macOS: keep the machine reachable (no idle system sleep) while serving
+    nosleep = macperms.prevent_idle_sleep()
+
     print(f"[server] discoverable as '{socket.gethostname()}' on the LAN")
     if macperms.IS_MAC:
         st = macperms.status()
@@ -238,6 +250,11 @@ def serve(cfg, sock=None, on_status=None):
         pass  # listening socket closed on shutdown
     finally:
         disc_stop.set()
+        if nosleep is not None:
+            try:
+                nosleep.terminate()
+            except Exception:
+                pass
         srv.close()
 
 
@@ -364,6 +381,10 @@ def _gui_session(conn, cfg, inject_q):
         return
     P.send_msg(conn, P.MSG_AUTH_OK)
 
+    # macOS: wake the display (slept display = black capture + input can't wake
+    # it) and keep it awake for the session.
+    display_wake = macperms.prevent_display_sleep()
+
     monitor = _get_monitor(cfg.monitor)
     width, height = monitor["width"], monitor["height"]
     P.send_msg(conn, P.MSG_SCREEN_INFO, P.SCREEN_INFO.pack(width, height))
@@ -401,6 +422,11 @@ def _gui_session(conn, cfg, inject_q):
         t.join(timeout=1.0)
         if clip is not None:
             clip.stop()
+        if display_wake is not None:
+            try:
+                display_wake.terminate()
+            except Exception:
+                pass
 
 
 def _launch_control(extra_args=None):

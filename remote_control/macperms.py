@@ -89,6 +89,48 @@ def _open(url):
         pass
 
 
+def wake_display():
+    """Wake the Mac display right now (no-op off macOS).
+
+    A sleeping display makes screen capture return black and synthetic input
+    won't turn it back on, so the agent calls this when a controller connects.
+    """
+    if not IS_MAC:
+        return
+    try:
+        subprocess.Popen(["caffeinate", "-u", "-t", "3"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def prevent_idle_sleep():
+    """Hold an assertion so the system doesn't idle-sleep while the agent is
+    online (otherwise a slept Mac becomes unreachable). The display may still
+    sleep; ``wake_display`` turns it back on. Returns a process to terminate()
+    when done, or None."""
+    if not IS_MAC:
+        return None
+    try:
+        return subprocess.Popen(["caffeinate", "-i"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+
+
+def prevent_display_sleep():
+    """Wake the display now and keep it (and the system) awake for the duration
+    of a session. Returns a process to terminate() at session end, or None."""
+    if not IS_MAC:
+        return None
+    wake_display()
+    try:
+        return subprocess.Popen(["caffeinate", "-d", "-i"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+
+
 def status():
     """Return a dict of current grants (both True on non-macOS)."""
     return {
