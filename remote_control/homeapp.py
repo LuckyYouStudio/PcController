@@ -423,6 +423,22 @@ def run_home_gui(base_args):
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+
+    if macperms.IS_MAC:
+        # Minimizing to the Dock on macOS pauses the Tk timer that drives input
+        # injection, which freezes the remote session. Don't let the window stay
+        # minimized: pop it back so the injection pump keeps running.
+        def _keep_visible(e=None):
+            if e is not None and getattr(e, "widget", None) is not root:
+                return
+            try:
+                if root.state() == "iconic":
+                    root.deiconify()
+                    root.lift()
+            except Exception:
+                pass
+        root.bind("<Unmap>", _keep_visible)
+
     if start_serving():
         set_discoverable(True)
         set_relay(getattr(base_args, "relay", "") or DEFAULT_SERVER)  # auto-online
