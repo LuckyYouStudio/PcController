@@ -426,18 +426,31 @@ def run_home_gui(base_args):
 
     if macperms.IS_MAC:
         # Minimizing to the Dock on macOS pauses the Tk timer that drives input
-        # injection, which freezes the remote session. Don't let the window stay
-        # minimized: pop it back so the injection pump keeps running.
-        def _keep_visible(e=None):
+        # injection, which freezes the remote session. Convert a minimize into a
+        # plain "hide" (withdraw): the window disappears but the event loop and
+        # injection keep running. Clicking the app's Dock icon brings it back.
+        def _on_unmap(e=None):
             if e is not None and getattr(e, "widget", None) is not root:
                 return
             try:
                 if root.state() == "iconic":
-                    root.deiconify()
-                    root.lift()
+                    root.deiconify()   # cancel the Dock-minimize (resumes timer)
+                    root.withdraw()    # hide without minimizing -> loop keeps running
             except Exception:
                 pass
-        root.bind("<Unmap>", _keep_visible)
+        root.bind("<Unmap>", _on_unmap)
+
+        def _reopen(*_a):
+            try:
+                root.deiconify()
+                root.lift()
+                root.focus_force()
+            except Exception:
+                pass
+        try:
+            root.createcommand("::tk::mac::ReopenApplication", _reopen)
+        except Exception:
+            pass
 
     if start_serving():
         set_discoverable(True)

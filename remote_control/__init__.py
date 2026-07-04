@@ -1,4 +1,4 @@
-"""Cross-platform LAN remote-control tool (any platform controls any platform).
+﻿"""Cross-platform LAN remote-control tool (any platform controls any platform).
 
 Modules:
     protocol      - length-prefixed binary framing over TCP
@@ -18,4 +18,4 @@ Modules:
     homeapp       - unified TeamViewer-style home window (LAN + Internet tabs)
 """
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
